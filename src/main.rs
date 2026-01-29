@@ -26,7 +26,11 @@ use teloxide::{
 use tokio::fs::{self};
 
 use crate::{
-    cli::{Cli, DEFAULT_DATABASE_PATH}, gallery::{GalleryCollectableMediaKind, GalleryItem, ParseMediaConfigurations}, image::ImageSource, kvstore::{KVStore, aes::AesEncryptedKV, heed::HeedKV, structured::SerdeKV}, privkey::PrivateKey
+    cli::{Cli, DEFAULT_DATABASE_PATH},
+    gallery::{GalleryCollectableMediaKind, GalleryItem, ParseMediaConfigurations},
+    image::ImageSource,
+    kvstore::{KVStore, aes::AesEncryptedKV, heed::HeedKV, structured::SerdeKV},
+    privkey::PrivateKey,
 };
 
 mod cli;
@@ -406,7 +410,8 @@ async fn handle_prepare_gallery_post(
             }
             PostGalleryState::AltTextCompensate(mut messages) => {
                 let GalleryCollectableMediaKind::Text(message) = message else {
-                    bot.send_message(chat_id, "Only text message is supported. Try again :)").await?;
+                    bot.send_message(chat_id, "Only text message is supported. Try again :)")
+                        .await?;
                     return Ok(());
                 };
                 messages.push(GalleryCollectableMediaKind::Compensate(
@@ -564,6 +569,7 @@ async fn handle_review_gallery_post(
                         )
                         .reply_markup(keyboard::inline_good_bad_buttons())
                         .await?;
+                        return Ok(());
                     }
                     Ok(None) => {
                         break;
