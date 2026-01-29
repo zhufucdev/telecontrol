@@ -1,0 +1,3 @@
+/target
+.env
+tcdb.lmdb

@@ -1,0 +1,27 @@
+[package]
+name = "telecontrol"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+teloxide = { version = "0.17.0", features = ["macros"] }
+log = "0.4"
+pretty_env_logger = "0.5"
+tokio = { version =  "1.8", features = ["rt-multi-thread", "macros"] }
+anyhow = "1.0.100"
+heed = "0.22.0"
+aes-gcm-siv = "0.11.1"
+clap = { version = "4.5.54", features = ["derive"] }
+base64 = "0.22.1"
+strum = { version = "0.27.2", features = ["derive"] }
+openapi = { path = "./openapi" }
+temp-file = "0.1.9"
+tempfile = "3.24.0"
+dotenv = "0.15.0"
+async-stream = "0.3.6"
+futures = "0.3.31"
+lingua = { version = "1.7.2", default-features = false, features = ["english", "chinese"] }
+serde = { version = "1.0.228", features = ["derive"] }
+postcard = { version = "1.1.3", features = ["alloc"] }
+regex = "1.12.2"
+urlencoding = "2.1.3"
