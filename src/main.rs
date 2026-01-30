@@ -550,6 +550,7 @@ async fn handle_review_gallery_post(
         "Good" => {
             bot.send_message(chat_id, "Perfect! I will create the post for ya")
                 .await?;
+            bot.answer_callback_query(callback.id).await?;
             let user_config = kv
                 .get::<user::Configuration>(callback.from.id)?
                 .unwrap_or_default();
@@ -616,6 +617,7 @@ async fn handle_review_gallery_post(
         }
         "Bad" => {
             bot.send_message(chat_id, "No pressures! I will forget what you have posted. Tell me if you have anything new!").await?;
+            bot.answer_callback_query(callback.id).await?;
         }
         _ => {
             log::error!("Unknown gallery post reivision callback data {data}");
@@ -627,7 +629,6 @@ async fn handle_review_gallery_post(
     if let ImageSource::LocalFile(file) = post.photo.source {
         fs::remove_file(file).await?;
     }
-    bot.answer_callback_query(callback.id).await?;
     Ok(())
 }
 
