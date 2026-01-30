@@ -2400,6 +2400,7 @@ dependencies = [
  "postcard",
  "pretty_env_logger",
  "regex",
+ "reqwest",
  "serde",
  "strum",
  "teloxide",

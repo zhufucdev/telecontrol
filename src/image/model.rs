@@ -120,7 +120,6 @@ impl Image {
             alt_text,
         })
     }
-
 }
 
 #[derive(Debug, Display)]

@@ -562,7 +562,7 @@ async fn handle_review_gallery_post(
             loop {
                 match states.try_next().await {
                     Err(err) => {
-                        log::error!("Failed to push to gallery: {err}");
+                        log::error!("Failed to push to gallery: {err:?}");
                         bot.send_message(
                             chat_id,
                             format!(
