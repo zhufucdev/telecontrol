@@ -372,6 +372,7 @@ async fn handle_post_callback(
                     .await?;
         }
     }
+    bot.answer_callback_query(query.id).await?;
     Ok(())
 }
 
@@ -542,6 +543,7 @@ async fn handle_review_gallery_post(
             "You don't have anything to review yet! Are you using a hacked client or something?",
         )
         .await?;
+        bot.answer_callback_query(callback.id).await?;
         return Ok(());
     };
     match data.as_str() {
@@ -611,24 +613,21 @@ async fn handle_review_gallery_post(
                     .send_message(chat_id, "The post has been created~")
                     .await;
             }
-            dialog.exit().await?;
-            global.reset().await?;
-            if let ImageSource::LocalFile(file) = &post.photo.source {
-                fs::remove_file(file).await?;
-            }
         }
         "Bad" => {
             bot.send_message(chat_id, "No pressures! I will forget what you have posted. Tell me if you have anything new!").await?;
-            dialog.exit().await?;
-            global.reset().await?;
-            if let ImageSource::LocalFile(file) = post.photo.source {
-                fs::remove_file(file).await?;
-            }
         }
         _ => {
             log::error!("Unknown gallery post reivision callback data {data}");
+            return Ok(());
         }
     }
+    dialog.exit().await?;
+    global.reset().await?;
+    if let ImageSource::LocalFile(file) = post.photo.source {
+        fs::remove_file(file).await?;
+    }
+    bot.answer_callback_query(callback.id).await?;
     Ok(())
 }
 
