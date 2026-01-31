@@ -1,3 +1,4 @@
 /target
 .env
 tcdb.lmdb
+tcdb.debug.lmdb
