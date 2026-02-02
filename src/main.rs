@@ -14,32 +14,44 @@ use teloxide::{
         UpdateHandler,
         dialogue::{GetChatId, InMemStorage},
     },
-    macros::BotCommands,
     payloads::SendMessageSetters,
     prelude::*,
     types::{
-        InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, KeyboardMarkup, MediaKind,
-        MessageKind, ReplyMarkup,
+        InlineKeyboardButton, InlineKeyboardButtonKind, InlineKeyboardMarkup, KeyboardButton,
+        KeyboardMarkup, MediaKind, MessageKind, ReplyMarkup,
     },
     utils::command::BotCommands as _,
 };
-use tokio::fs::{self};
-
-use crate::{
-    cli::{Cli, DEFAULT_DATABASE_PATH},
-    gallery::{GalleryCollectableMediaKind, GalleryItem, ParseMediaConfigurations},
-    image::ImageSource,
-    kvstore::{KVStore, aes::AesEncryptedKV, heed::HeedKV, structured::SerdeKV},
-    privkey::PrivateKey,
+use tokio::{
+    fs::{self},
+    sync::Mutex,
 };
 
+use crate::{
+    _genai::{AvailabilityTest, FromUserConfiguredKey, caption::GenerateCaption},
+    asynciter::FirstSomeThrowing,
+    cli::{Cli, DEFAULT_DATABASE_PATH},
+    command::Command,
+    gallery::{
+        GalleryCollectableCompensate, GalleryCollectableMediaKind, ParseMediaConfigurations,
+    },
+    image::ImageSource,
+    kvstore::{aes::AesEncryptedKV, heed::HeedKV, structured::SerdeKV},
+    privkey::PrivateKey,
+    state::*,
+};
+
+mod _genai;
+mod asynciter;
 mod cli;
+mod command;
 mod gallery;
 mod image;
 mod keyboard;
 mod kvstore;
 mod locale;
 mod privkey;
+mod state;
 mod user;
 
 #[tokio::main]
@@ -102,6 +114,7 @@ async fn bot_loop(
         .dependencies(dptree::deps![
             InMemStorage::<GlobalState>::new(),
             InMemStorage::<PostGalleryState>::new(),
+            InMemStorage::<UpdateVisionModelState>::new(),
             kv
         ])
         .enable_ctrlc_handler()
@@ -125,6 +138,7 @@ fn bot_state_machine() -> UpdateHandler<anyhow::Error> {
                         .branch(dptree::case![Command::Post].endpoint(handle_post_command))
                         .branch(dptree::case![Command::SetKey].endpoint(handle_set_key_command))
                         .branch(dptree::case![Command::SetApi].endpoint(handle_set_api_command))
+                        .branch(dptree::case![Command::SetVisionModel].endpoint(handle_set_vision_model_command))
                         .branch(dptree::case![Command::Help].endpoint(handle_help_command)),
                 )
                 .branch(
@@ -132,47 +146,32 @@ fn bot_state_machine() -> UpdateHandler<anyhow::Error> {
                         .enter_dialogue::<Message, InMemStorage<PostGalleryState>, PostGalleryState>()
                         .endpoint(handle_prepare_gallery_post),
                 )
+                .branch(
+                    dptree::case![GlobalState::UpdatingVisionModel]
+                        .enter_dialogue::<Message, InMemStorage<UpdateVisionModelState>, UpdateVisionModelState>()
+                        .endpoint(handle_update_vision_model)
+                ),
         )
         .branch(
             Update::filter_callback_query()
                 .enter_dialogue::<CallbackQuery, InMemStorage<GlobalState>, GlobalState>()
                 .branch(dptree::case![GlobalState::Idle].endpoint(handle_post_callback))
                 .branch(
+                    dptree::case![GlobalState::PreparingGalleryPost]
+                        .enter_dialogue::<CallbackQuery, InMemStorage<PostGalleryState>, PostGalleryState>()
+                        .endpoint(handle_prepare_gallery_post_callback))
+                .branch(
                     dptree::case![GlobalState::ReviewingGalleryPost]
                         .enter_dialogue::<CallbackQuery, InMemStorage<PostGalleryState>, PostGalleryState>()
-                        .endpoint(handle_review_gallery_post)
+                        .endpoint(handle_review_gallery_post_callback)
                 ),
         )
 }
 
-#[derive(BotCommands, Clone)]
-#[command(
-    rename_rule = "lowercase",
-    description = "Available Telecontrol commands:"
-)]
-enum Command {
-    #[command(description = "display this menu")]
-    Help,
-    #[command(description = "update your post authorization key")]
-    SetKey,
-    #[command(description = "update your API endpoint, only http(s) are supported")]
-    SetApi,
-    #[command(description = "I want to post stuff")]
-    Post,
-}
-
-#[derive(Clone, Debug, Default)]
-enum GlobalState {
-    #[default]
-    Idle,
-    PreparingGalleryPost,
-    ReviewingGalleryPost,
-    UpdatingKey,
-    UpdatingApiEndpoint,
-}
-
 type GlobalDialog = Dialogue<GlobalState, InMemStorage<GlobalState>>;
 type PostGalleryDialog = Dialogue<PostGalleryState, InMemStorage<PostGalleryState>>;
+type UpdateVisionModelDialog =
+    Dialogue<UpdateVisionModelState, InMemStorage<UpdateVisionModelState>>;
 type UserConfigKV = SerdeKV<AesEncryptedKV<HeedKV>>;
 
 async fn handle_help_command(bot: Bot, message: Message) -> anyhow::Result<()> {
@@ -189,7 +188,11 @@ async fn handle_post_command(
     let Some(user) = message.from else {
         return Ok(());
     };
-    if !keys.contains(user.id)? {
+    if !keys.contains(user.id)?
+        || keys
+            .get::<user::Configuration>(user.id)
+            .is_ok_and(|opt| opt.is_none())
+    {
         bot.send_message(message.chat.id, "You should /setkey first")
             .await?;
         return Ok(());
@@ -239,6 +242,16 @@ async fn handle_set_api_command(
         "Send new API endpoint, beginning with http:// or https://",
     )
     .await?;
+    Ok(())
+}
+
+async fn handle_set_vision_model_command(
+    bot: Bot,
+    message: Message,
+    dialog: GlobalDialog,
+) -> anyhow::Result<()> {
+    dialog.update(GlobalState::UpdatingVisionModel).await?;
+    bot.send_message(message.chat.id, "Tell me name of the model. Use namespace to represent the provider, or omit to use official one. Use slash for adapter kind. For example, together::openai/gpt-oss-20b").await?;
     Ok(())
 }
 
@@ -337,15 +350,6 @@ async fn handle_update_api_endpoint(
     Ok(())
 }
 
-#[derive(Default, Debug, Clone)]
-enum PostGalleryState {
-    #[default]
-    Idle,
-    Collecting(Vec<GalleryCollectableMediaKind>),
-    AltTextCompensate(Vec<GalleryCollectableMediaKind>),
-    Committed(GalleryItem),
-}
-
 async fn handle_post_callback(
     bot: Bot,
     query: CallbackQuery,
@@ -381,6 +385,7 @@ async fn handle_prepare_gallery_post(
     message: Message,
     dialog: PostGalleryDialog,
     global: GlobalDialog,
+    kv: Arc<UserConfigKV>,
 ) -> anyhow::Result<()> {
     async fn send_unsupported_alert(bot: Bot, chat_id: ChatId) -> anyhow::Result<()> {
         bot.send_message(
@@ -430,6 +435,9 @@ async fn handle_prepare_gallery_post(
         Ok(())
     }
     let chat_id = message.chat.id;
+    let Some(user) = message.from else {
+        return Ok(());
+    };
     let MessageKind::Common(common_msg) = message.kind else {
         send_unsupported_alert(bot, chat_id).await?;
         return Ok(());
@@ -470,7 +478,23 @@ async fn handle_prepare_gallery_post(
                         }
                         Err(err) => match err {
                             gallery::Error::PhotoError(image::Error::MissingAltText) => {
-                                bot.send_message(chat_id, "The photo doesn't have a caption. Send me one! Describe the content of the image in brief.").await?;
+                                if let Ok(Some(user_config)) =
+                                    kv.get::<user::Configuration>(user.id)
+                                    && user_config.vision_model_name.is_some()
+                                    && user_config.vision_model_key.is_some()
+                                {
+                                    bot.send_message(
+                                        chat_id,
+                                        "This photo doesn't have a caption. Send me one, or use the VLM to generate!",
+                                    )
+                                    .reply_markup(InlineKeyboardMarkup::new([[InlineKeyboardButton::new(
+                                        "Generate",
+                                        InlineKeyboardButtonKind::CallbackData("Generate".to_string()),
+                                    )]]))
+                                    .await?;
+                                } else {
+                                    bot.send_message(chat_id, "The photo doesn't have a caption. Send me one! Describe the content of the image in brief.").await?;
+                                }
                                 dialog
                                     .update(PostGalleryState::AltTextCompensate(media))
                                     .await?;
@@ -525,7 +549,7 @@ async fn handle_prepare_gallery_post(
     Ok(())
 }
 
-async fn handle_review_gallery_post(
+async fn handle_review_gallery_post_callback(
     bot: Bot,
     callback: CallbackQuery,
     dialog: PostGalleryDialog,
@@ -626,9 +650,155 @@ async fn handle_review_gallery_post(
     }
     dialog.exit().await?;
     global.reset().await?;
-    if let ImageSource::LocalFile(file) = post.photo.source {
-        fs::remove_file(file).await?;
+    post.photo.source.dispose().await?;
+    Ok(())
+}
+
+async fn handle_update_vision_model(
+    bot: Bot,
+    message: Message,
+    dialog: UpdateVisionModelDialog,
+    global: GlobalDialog,
+    kv: Arc<UserConfigKV>,
+) -> anyhow::Result<()> {
+    let Some(user) = &message.from else {
+        return Ok(());
+    };
+    let chat_id = message.chat.id;
+    let Some(text) = &message.text() else {
+        bot.send_message(message.chat.id, "You should send a text message")
+            .await?;
+        return Ok(());
+    };
+    let old_config = kv.get::<user::Configuration>(user.id)?.unwrap_or_default();
+    let config = match dialog.get_or_default().await? {
+        UpdateVisionModelState::Name => {
+            bot.send_message(
+                chat_id,
+                "Send me your API key. Sensitive data will be erased afterwards.",
+            )
+            .await?;
+            dialog.update(UpdateVisionModelState::Key).await?;
+            user::Configuration {
+                vision_model_name: Some(text.to_string()),
+                ..old_config
+            }
+        }
+        UpdateVisionModelState::Key => {
+            bot.delete_message(chat_id, message.id).await?;
+            let client = genai::Client::from_user_configured_key(text.to_string());
+            let Some(model_name) = &old_config.vision_model_name else {
+                return Ok(());
+            };
+            match client.test_availability(model_name).await {
+                Ok(sane) => {
+                    if !sane {
+                        log::warn!("Model {model_name} was insane. Take it as an L")
+                    }
+                    bot.send_message(
+                        chat_id,
+                        "Perfect! Now you can post with VLM generating captions.",
+                    )
+                    .await?;
+                }
+                Err(err) => {
+                    log::error!("LM {model_name} is unavailable: {err}");
+                    bot.send_message(chat_id, format!("Your choice of model / key combination seems not legit. At testflight, an error was returned. Refer to the console for details.")).await?;
+                    dialog.exit().await?;
+                    global.reset().await?;
+                    return Ok(());
+                }
+            }
+            dialog.exit().await?;
+            global.reset().await?;
+            user::Configuration {
+                vision_model_key: Some(text.to_string()),
+                ..old_config
+            }
+        }
+    };
+    kv.set(user.id, &config)?;
+    Ok(())
+}
+
+async fn handle_prepare_gallery_post_callback(
+    bot: Bot,
+    query: CallbackQuery,
+    dialog: PostGalleryDialog,
+    kv: Arc<UserConfigKV>,
+) -> anyhow::Result<()> {
+    let Some(name) = &query.data else {
+        return Ok(());
+    };
+    let chat_id = query.chat_id().unwrap();
+    match name.as_str() {
+        "Generate" => {
+            let PostGalleryState::AltTextCompensate(mut media) = dialog.get_or_default().await?
+            else {
+                bot.answer_callback_query(query.id).await?;
+                return Ok(());
+            };
+
+            let Some(user_config) = kv.get::<user::Configuration>(query.from.id)? else {
+                return Ok(());
+            };
+            let Some(model_name) = &user_config.vision_model_name else {
+                return Ok(());
+            };
+            let Some(model_key) = &user_config.vision_model_key else {
+                return Ok(());
+            };
+            let mut image: Option<ImageSource> = None;
+            for m in media.iter() {
+                if let Some(im) = ImageSource::from_gallery_collectable(&m, &bot).await? {
+                    image = Some(im);
+                    break;
+                }
+            }
+            let Some(image) = image else {
+                bot.send_message(chat_id, "There's no photo to caption on. Did you just clicked a button from previous dialogs? Silly").await?;
+                bot.answer_callback_query(query.id).await?;
+                return Ok(());
+            };
+
+            let client = genai::Client::from_user_configured_key(model_key.to_string());
+            match client.generate_caption(model_name, image).await {
+                Ok(caption) => {
+                    media.push(GalleryCollectableMediaKind::Compensate(
+                        GalleryCollectableCompensate::AltText(caption.clone()),
+                    ));
+                    dialog.update(PostGalleryState::Collecting(media)).await?;
+                    bot.send_message(
+                        chat_id,
+                        format!("So the VLM came up with the following caption:\n{caption}\n\nI have modified your request. Press the \"Done\" button if that seems appropriate.")
+                    ).await?;
+                }
+                Err(err) => {
+                    log::error!("{err}");
+                    let talk = match err {
+                        _genai::caption::Error::Io(_) => "processing the image file",
+                        _genai::caption::Error::UnknownImageType => "determining image type",
+                        _genai::caption::Error::GenAI(_) => "talking to the LM provider",
+                    };
+                    bot.send_message(
+                        chat_id,
+                        format!(
+                            "I had trouble {talk}. You may refer to the console for more details."
+                        ),
+                    )
+                    .await?;
+                }
+            }
+        }
+        _ => {
+            bot.send_message(
+                query.chat_id().unwrap(),
+                "Unknown query data. Are you using a hacked client?",
+            )
+            .await?;
+        }
     }
+    bot.answer_callback_query(query.id).await?;
     Ok(())
 }
 

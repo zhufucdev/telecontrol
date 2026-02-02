@@ -1,13 +1,25 @@
-use std::{io, path::PathBuf};
+use std::{
+    collections::HashMap,
+    io,
+    path::PathBuf,
+    sync::{Arc, LazyLock},
+};
 
+use genai::chat::CacheControl;
 use strum::Display;
 use teloxide::{
     Bot, DownloadError, RequestError,
     net::Download,
     prelude::Requester,
-    types::{FileMeta, MediaDocument, MediaPhoto},
+    types::{FileMeta, FileUniqueId, MediaDocument, MediaPhoto},
 };
-use tokio::fs::{self, File};
+use tempfile::TempDir;
+use tokio::{
+    fs::{self, File},
+    sync::Mutex,
+};
+
+use crate::gallery::GalleryCollectableMediaKind;
 
 #[derive(Debug, Clone)]
 pub struct Image {
@@ -15,35 +27,52 @@ pub struct Image {
     pub alt_text: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImageSource {
     LocalFile(PathBuf),
     Url(String),
 }
 
+static IMAGE_CACHE_REPO: LazyLock<Arc<Mutex<HashMap<FileUniqueId, ImageCacheEntry>>>> =
+    LazyLock::new(|| Arc::new(Mutex::new(HashMap::new())));
+
+struct ImageCacheEntry {
+    source: ImageSource,
+    temp_dir: TempDir,
+}
+
 impl ImageSource {
     pub async fn from_file_meta(meta: &FileMeta, bot: &Bot) -> Result<Self, Error> {
+        if let Some(cached) = IMAGE_CACHE_REPO.lock().await.get(&meta.unique_id) {
+            return Ok(cached.source.clone());
+        }
         let remote_file = bot
             .get_file(meta.id.clone())
             .await
             .map_err(|err| Error::MissingMedia(err))?;
-        let cache_path =
-            tempfile::tempdir().map(|dir| dir.path().join(remote_file.unique_id.to_string()))?;
-        if let Some(cache) = cache_path.parent() {
-            log::info!("Creating cache directory {}", cache.display());
-            if !cache.exists() {
-                fs::create_dir_all(cache).await?;
-            }
-        }
+        let temp_dir = tempfile::tempdir()?;
+        let cache_path = temp_dir
+            .path()
+            .to_owned()
+            .join(remote_file.unique_id.to_string());
         let mut local_file = File::create_new(&cache_path).await?;
         bot.download_file(&remote_file.path, &mut local_file)
             .await?;
         log::info!(
-            "Cached image source {} to {}",
+            "cached image source {} to {}",
             meta.unique_id,
             cache_path.display()
         );
-        Ok(ImageSource::LocalFile(cache_path))
+        let source = ImageSource::LocalFile(cache_path);
+        let mut cache = IMAGE_CACHE_REPO.lock().await;
+        cache.insert(
+            meta.unique_id.clone(),
+            ImageCacheEntry {
+                source: source.clone(),
+                temp_dir,
+            },
+        );
+        Ok(source)
     }
 
     pub async fn from_media_photo(media: &MediaPhoto, bot: &Bot) -> Result<Self, Error> {
@@ -59,6 +88,21 @@ impl ImageSource {
 
     pub async fn from_media_document(media: &MediaDocument, bot: &Bot) -> Result<Self, Error> {
         ImageSource::from_file_meta(&media.document.file, bot).await
+    }
+
+    pub async fn from_gallery_collectable(
+        collectable: &GalleryCollectableMediaKind,
+        bot: &Bot,
+    ) -> Result<Option<Self>, Error> {
+        Ok(match collectable {
+            GalleryCollectableMediaKind::Photo(media_photo) => {
+                Some(Self::from_media_photo(media_photo, bot).await?)
+            }
+            GalleryCollectableMediaKind::Document(media_document) => {
+                Some(Self::from_media_document(media_document, bot).await?)
+            }
+            _ => None,
+        })
     }
 
     pub fn filename(&self) -> Option<String> {
@@ -82,6 +126,25 @@ impl ImageSource {
                 .flatten()
                 .map(|s| s.to_string()),
         }
+    }
+
+    pub async fn dispose(self) -> Result<(), std::io::Error> {
+        if let Some((k, _)) = IMAGE_CACHE_REPO
+            .lock()
+            .await
+            .iter()
+            .find(|(_, v)| v.source == self)
+        {
+            let mut cache = IMAGE_CACHE_REPO.lock().await;
+            cache.remove(k);
+        }
+        match &self {
+            ImageSource::LocalFile(path_buf) => {
+                fs::remove_file(path_buf).await?;
+            }
+            ImageSource::Url(_) => {}
+        }
+        Ok(())
     }
 }
 

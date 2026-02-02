@@ -9,6 +9,8 @@ use crate::user::defaults::DEFAULT_API_ENDPOINT;
 pub struct Configuration {
     pub post_auth_key: Option<String>,
     pub endpoint: Option<String>,
+    pub vision_model_name: Option<String>,
+    pub vision_model_key: Option<String>,
 }
 
 impl Configuration {
