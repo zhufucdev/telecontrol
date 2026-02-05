@@ -1,4 +1,4 @@
-use genai::adapter::AdapterKind;
+use openapi::models::UpdatePutRequest;
 
 use crate::gallery::{GalleryCollectableMediaKind, GalleryItem};
 
@@ -11,6 +11,8 @@ pub enum GlobalState {
     UpdatingKey,
     UpdatingApiEndpoint,
     UpdatingVisionModel,
+    PreparingUpdateTranslation,
+    ReviewingUpdateTranslation,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -27,4 +29,12 @@ pub enum UpdateVisionModelState {
     #[default]
     Name,
     Key,
+}
+
+#[derive(Default, Debug, Clone)]
+pub enum UpdateTranslationState {
+    #[default]
+    Idle,
+    Selected(i32),
+    Translated(Vec<UpdatePutRequest>),
 }

@@ -129,20 +129,12 @@ impl ImageSource {
     }
 
     pub async fn dispose(self) -> Result<(), std::io::Error> {
-        if let Some((k, _)) = IMAGE_CACHE_REPO
-            .lock()
-            .await
-            .iter()
-            .find(|(_, v)| v.source == self)
-        {
+        let cache_finder = IMAGE_CACHE_REPO.lock().await;
+        if let Some((k, _)) = cache_finder.iter().find(|(_, v)| v.source == self) {
+            let file_id = k.clone();
+            drop(cache_finder);
             let mut cache = IMAGE_CACHE_REPO.lock().await;
-            cache.remove(k);
-        }
-        match &self {
-            ImageSource::LocalFile(path_buf) => {
-                fs::remove_file(path_buf).await?;
-            }
-            ImageSource::Url(_) => {}
+            cache.remove(&file_id);
         }
         Ok(())
     }

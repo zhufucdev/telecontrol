@@ -22,14 +22,10 @@ use teloxide::{
     },
     utils::command::BotCommands as _,
 };
-use tokio::{
-    fs::{self},
-    sync::Mutex,
-};
+use tokio::fs::{self};
 
 use crate::{
     _genai::{AvailabilityTest, FromUserConfiguredKey, caption::GenerateCaption},
-    asynciter::FirstSomeThrowing,
     cli::{Cli, DEFAULT_DATABASE_PATH},
     command::Command,
     gallery::{
@@ -648,8 +644,10 @@ async fn handle_review_gallery_post_callback(
             return Ok(());
         }
     }
+    log::debug!("exiting dialog");
     dialog.exit().await?;
     global.reset().await?;
+    log::debug!("disposing post");
     post.photo.source.dispose().await?;
     Ok(())
 }

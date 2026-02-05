@@ -18,4 +18,6 @@ pub enum Command {
     SetVisionModel,
     #[command(description = "I want to post stuff")]
     Post,
+    #[command(description = "I want to translate stuff")]
+    Translate,
 }
