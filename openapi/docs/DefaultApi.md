@@ -13,6 +13,8 @@ Method | HTTP request | Description
 [**image_list_get**](DefaultApi.md#image_list_get) | **GET** /image/list | List Images
 [**image_post**](DefaultApi.md#image_post) | **POST** /image | Upload Image
 [**image_put**](DefaultApi.md#image_put) | **PUT** /image | Assign Image to CDN Resource
+[**strings_by_locale_get**](DefaultApi.md#strings_by_locale_get) | **GET** /strings/by-locale | List Strings by Locale Copy
+[**strings_by_locale_locale_get**](DefaultApi.md#strings_by_locale_locale_get) | **GET** /strings/by-locale/{locale} | List Strings by Specific Locale
 [**update_id_delete**](DefaultApi.md#update_id_delete) | **DELETE** /update/{id} | Delete Update Post
 [**update_id_get**](DefaultApi.md#update_id_get) | **GET** /update/{id} | Query Update Post
 [**update_id_patch**](DefaultApi.md#update_id_patch) | **PATCH** /update/{id} | Patch Update Post
@@ -289,6 +291,63 @@ Name | Type | Description  | Required | Notes
 ### HTTP request headers
 
 - **Content-Type**: application/json
+- **Accept**: application/json
+
+[[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)
+
+
+## strings_by_locale_get
+
+> models::StringsByLocaleGet200Response strings_by_locale_get()
+List Strings by Locale Copy
+
+
+
+### Parameters
+
+This endpoint does not need any parameter.
+
+### Return type
+
+[**models::StringsByLocaleGet200Response**](_strings_by_locale_get_200_response.md)
+
+### Authorization
+
+[PostAuthKey](../README.md#PostAuthKey)
+
+### HTTP request headers
+
+- **Content-Type**: Not defined
+- **Accept**: application/json
+
+[[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)
+
+
+## strings_by_locale_locale_get
+
+> Vec<String> strings_by_locale_locale_get(locale)
+List Strings by Specific Locale
+
+
+
+### Parameters
+
+
+Name | Type | Description  | Required | Notes
+------------- | ------------- | ------------- | ------------- | -------------
+**locale** | **String** |  | [required] |
+
+### Return type
+
+**Vec<String>**
+
+### Authorization
+
+[PostAuthKey](../README.md#PostAuthKey)
+
+### HTTP request headers
+
+- **Content-Type**: Not defined
 - **Accept**: application/json
 
 [[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)

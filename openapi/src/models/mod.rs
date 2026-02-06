@@ -12,6 +12,8 @@ pub mod _image_put_request;
 pub use self::_image_put_request::ImagePutRequest;
 pub mod shape;
 pub use self::shape::Shape;
+pub mod _strings_by_locale_get_200_response;
+pub use self::_strings_by_locale_get_200_response::StringsByLocaleGet200Response;
 pub mod supported_locale;
 pub use self::supported_locale::SupportedLocale;
 pub mod _update__id__patch_request;

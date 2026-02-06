@@ -35,6 +35,8 @@ Class | Method | HTTP request | Description
 *DefaultApi* | [**image_list_get**](docs/DefaultApi.md#image_list_get) | **GET** /image/list | List Images
 *DefaultApi* | [**image_post**](docs/DefaultApi.md#image_post) | **POST** /image | Upload Image
 *DefaultApi* | [**image_put**](docs/DefaultApi.md#image_put) | **PUT** /image | Assign Image to CDN Resource
+*DefaultApi* | [**strings_by_locale_get**](docs/DefaultApi.md#strings_by_locale_get) | **GET** /strings/by-locale | List Strings by Locale Copy
+*DefaultApi* | [**strings_by_locale_locale_get**](docs/DefaultApi.md#strings_by_locale_locale_get) | **GET** /strings/by-locale/{locale} | List Strings by Specific Locale
 *DefaultApi* | [**update_id_delete**](docs/DefaultApi.md#update_id_delete) | **DELETE** /update/{id} | Delete Update Post
 *DefaultApi* | [**update_id_get**](docs/DefaultApi.md#update_id_get) | **GET** /update/{id} | Query Update Post
 *DefaultApi* | [**update_id_patch**](docs/DefaultApi.md#update_id_patch) | **PATCH** /update/{id} | Patch Update Post
@@ -52,6 +54,7 @@ Class | Method | HTTP request | Description
  - [ImagePost201Response](docs/ImagePost201Response.md)
  - [ImagePutRequest](docs/ImagePutRequest.md)
  - [Shape](docs/Shape.md)
+ - [StringsByLocaleGet200Response](docs/StringsByLocaleGet200Response.md)
  - [SupportedLocale](docs/SupportedLocale.md)
  - [UpdateIdPatchRequest](docs/UpdateIdPatchRequest.md)
  - [UpdatePost](docs/UpdatePost.md)

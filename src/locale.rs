@@ -47,3 +47,29 @@ impl FromLanguage for SupportedLocale {
         }
     }
 }
+
+pub trait LocaleLanguageName {
+    fn typical_language_name(&self) -> &'static str;
+    fn from_typical_language_name(name: &str) -> Option<Self>
+    where
+        Self: Sized;
+}
+
+impl LocaleLanguageName for SupportedLocale {
+    fn typical_language_name(&self) -> &'static str {
+        match self {
+            SupportedLocale::En => "English",
+            SupportedLocale::Zh => "Simplified Chinese",
+            SupportedLocale::ZhTw => "Traditional Chinese",
+        }
+    }
+
+    fn from_typical_language_name(name: &str) -> Option<Self> {
+        match name {
+            "English" => Some(SupportedLocale::En),
+            "Simplified Chinese" => Some(SupportedLocale::Zh),
+            "Traditional Chinese" => Some(SupportedLocale::ZhTw),
+            _ => None,
+        }
+    }
+}

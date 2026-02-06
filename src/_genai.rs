@@ -8,6 +8,7 @@ use genai::{
 };
 
 pub mod caption;
+pub mod translation;
 
 pub trait FromUserConfiguredKey {
     fn from_user_configured_key(key: String) -> Self;

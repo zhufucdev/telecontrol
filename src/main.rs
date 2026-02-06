@@ -1,13 +1,21 @@
 use std::{
+    collections::HashMap,
     env,
+    ops::Index,
     path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
 };
 
 use clap::Parser;
-use futures::{TryStreamExt, pin_mut};
+use futures::{TryStreamExt, future, pin_mut};
+use lingua::Language;
+use openapi::{
+    apis::default_api,
+    models::{SupportedLocale, UpdatePutRequest},
+};
 use regex::Regex;
+use serde::Deserialize;
 use strum::{Display, EnumIter, EnumString, IntoEnumIterator};
 use teloxide::{
     dispatching::{
@@ -17,15 +25,18 @@ use teloxide::{
     payloads::SendMessageSetters,
     prelude::*,
     types::{
-        InlineKeyboardButton, InlineKeyboardButtonKind, InlineKeyboardMarkup, KeyboardButton,
-        KeyboardMarkup, MediaKind, MessageKind, ReplyMarkup,
+        InlineKeyboardButton, InlineKeyboardButtonKind, InlineKeyboardMarkup, InputPollOption,
+        KeyboardButton, KeyboardMarkup, MediaKind, MessageKind, ReplyMarkup,
     },
     utils::command::BotCommands as _,
 };
 use tokio::fs::{self};
 
 use crate::{
-    _genai::{AvailabilityTest, FromUserConfiguredKey, caption::GenerateCaption},
+    _genai::{
+        AvailabilityTest, FromUserConfiguredKey, caption::GenerateCaption, translation::TranslateTo,
+    },
+    asynciter::FirstSomeThrowing,
     cli::{Cli, DEFAULT_DATABASE_PATH},
     command::Command,
     gallery::{
@@ -33,6 +44,8 @@ use crate::{
     },
     image::ImageSource,
     kvstore::{aes::AesEncryptedKV, heed::HeedKV, structured::SerdeKV},
+    locale::{AllCases, FromLanguage, LocaleLanguageName},
+    poll::{ContextByPollId, PollContext},
     privkey::PrivateKey,
     state::*,
 };
@@ -46,6 +59,7 @@ mod image;
 mod keyboard;
 mod kvstore;
 mod locale;
+mod poll;
 mod privkey;
 mod state;
 mod user;
@@ -111,6 +125,8 @@ async fn bot_loop(
             InMemStorage::<GlobalState>::new(),
             InMemStorage::<PostGalleryState>::new(),
             InMemStorage::<UpdateVisionModelState>::new(),
+            InMemStorage::<UpdateTranslationState>::new(),
+            poll::new_store(),
             kv
         ])
         .enable_ctrlc_handler()
@@ -125,7 +141,7 @@ fn bot_state_machine() -> UpdateHandler<anyhow::Error> {
     dptree::entry()
         .branch(
             Update::filter_message()
-                .enter_dialogue::<Message, InMemStorage<GlobalState>, GlobalState>()
+                .enter_dialogue::<Message, GlobalDialogStorage, GlobalState>()
                 .branch(dptree::case![GlobalState::UpdatingKey].endpoint(handle_update_key))
                 .branch(dptree::case![GlobalState::UpdatingApiEndpoint].endpoint(handle_update_api_endpoint))
                 .branch(
@@ -135,39 +151,64 @@ fn bot_state_machine() -> UpdateHandler<anyhow::Error> {
                         .branch(dptree::case![Command::SetKey].endpoint(handle_set_key_command))
                         .branch(dptree::case![Command::SetApi].endpoint(handle_set_api_command))
                         .branch(dptree::case![Command::SetVisionModel].endpoint(handle_set_vision_model_command))
+                        .branch(dptree::case![Command::Translate].endpoint(handle_translate_command))
                         .branch(dptree::case![Command::Help].endpoint(handle_help_command)),
                 )
                 .branch(
                     dptree::case![GlobalState::PreparingGalleryPost]
-                        .enter_dialogue::<Message, InMemStorage<PostGalleryState>, PostGalleryState>()
+                        .enter_dialogue::<Message, PostGalleryDialogStorage, PostGalleryState>()
                         .endpoint(handle_prepare_gallery_post),
                 )
                 .branch(
                     dptree::case![GlobalState::UpdatingVisionModel]
-                        .enter_dialogue::<Message, InMemStorage<UpdateVisionModelState>, UpdateVisionModelState>()
+                        .enter_dialogue::<Message, UpdateVisionModelDialogStorage, UpdateVisionModelState>()
                         .endpoint(handle_update_vision_model)
                 ),
         )
         .branch(
             Update::filter_callback_query()
-                .enter_dialogue::<CallbackQuery, InMemStorage<GlobalState>, GlobalState>()
-                .branch(dptree::case![GlobalState::Idle].endpoint(handle_post_callback))
+                .enter_dialogue::<CallbackQuery, GlobalDialogStorage, GlobalState>()
+                .branch(dptree::case![GlobalState::PostRequestd].endpoint(handle_post_callback))
+                .branch(dptree::case![GlobalState::TranslationRequested].endpoint(handle_translate_callback))
+                .branch(
+                    dptree::case![GlobalState::PreparingUpdateTranslation]
+                        .enter_dialogue::<CallbackQuery, UpdateTranslationDialogStorage, UpdateTranslationState>()
+                        .endpoint(handle_prepare_update_translation_callback)
+                )
                 .branch(
                     dptree::case![GlobalState::PreparingGalleryPost]
-                        .enter_dialogue::<CallbackQuery, InMemStorage<PostGalleryState>, PostGalleryState>()
+                        .enter_dialogue::<CallbackQuery, PostGalleryDialogStorage, PostGalleryState>()
                         .endpoint(handle_prepare_gallery_post_callback))
                 .branch(
                     dptree::case![GlobalState::ReviewingGalleryPost]
-                        .enter_dialogue::<CallbackQuery, InMemStorage<PostGalleryState>, PostGalleryState>()
+                        .enter_dialogue::<CallbackQuery, PostGalleryDialogStorage, PostGalleryState>()
                         .endpoint(handle_review_gallery_post_callback)
+                )
+                .branch(
+                    dptree::case![GlobalState::ReviewingUpdateTranslation]
+                        .enter_dialogue::<CallbackQuery, UpdateTranslationDialogStorage, UpdateTranslationState>()
+                        .endpoint(handle_review_update_translation_callback)
                 ),
+        )
+        .branch(
+            Update::filter_poll()
+                .chain(poll::enter_dialog::<GlobalDialogStorage, GlobalState, _>())
+                .branch(
+                    dptree::case![GlobalState::PreparingUpdateTranslation]
+                        .chain(poll::enter_dialog::<UpdateTranslationDialogStorage, UpdateTranslationState, _>())
+                        .endpoint(handle_update_translation_langauge_select_poll)
+                )
         )
 }
 
-type GlobalDialog = Dialogue<GlobalState, InMemStorage<GlobalState>>;
-type PostGalleryDialog = Dialogue<PostGalleryState, InMemStorage<PostGalleryState>>;
-type UpdateVisionModelDialog =
-    Dialogue<UpdateVisionModelState, InMemStorage<UpdateVisionModelState>>;
+type GlobalDialogStorage = InMemStorage<GlobalState>;
+type GlobalDialog = Dialogue<GlobalState, GlobalDialogStorage>;
+type PostGalleryDialogStorage = InMemStorage<PostGalleryState>;
+type PostGalleryDialog = Dialogue<PostGalleryState, PostGalleryDialogStorage>;
+type UpdateVisionModelDialogStorage = InMemStorage<UpdateVisionModelState>;
+type UpdateVisionModelDialog = Dialogue<UpdateVisionModelState, UpdateVisionModelDialogStorage>;
+type UpdateTranslationDialogStorage = InMemStorage<UpdateTranslationState>;
+type UpdateTranslationDialog = Dialogue<UpdateTranslationState, UpdateTranslationDialogStorage>;
 type UserConfigKV = SerdeKV<AesEncryptedKV<HeedKV>>;
 
 async fn handle_help_command(bot: Bot, message: Message) -> anyhow::Result<()> {
@@ -180,6 +221,7 @@ async fn handle_post_command(
     bot: Bot,
     message: Message,
     keys: Arc<UserConfigKV>,
+    global: GlobalDialog,
 ) -> anyhow::Result<()> {
     let Some(user) = message.from else {
         return Ok(());
@@ -193,6 +235,9 @@ async fn handle_post_command(
             .await?;
         return Ok(());
     }
+
+    global.update(GlobalState::PostRequestd).await?;
+
     let actions =
         InlineKeyboardMarkup::new(PostKind::iter().collect::<Vec<PostKind>>().chunks(3).map(
             |row| {
@@ -200,7 +245,6 @@ async fn handle_post_command(
                     .map(|name| InlineKeyboardButton::callback(name.to_string(), name.to_string()))
             },
         ));
-
     bot.send_message(message.chat.id, "Choose what you want!")
         .reply_markup(actions)
         .await?;
@@ -365,11 +409,11 @@ async fn handle_post_callback(
                 [[KeyboardButton::new("Done"), KeyboardButton::new("Cancel")]].into_iter(),
             );
             bot.send_message(
-                        query.chat_id().expect("ChatID unavailable"),
-                        "Send me the photo you would like to post! Leave a funny comment if you feel like so~",
-                    )
-                        .reply_markup(keyboard)
-                    .await?;
+                query.chat_id().expect("ChatID unavailable"),
+                "Send me the photo you would like to post! Leave a funny comment if you feel like so~",
+            )
+            .reply_markup(keyboard)
+            .await?;
         }
     }
     bot.answer_callback_query(query.id).await?;
@@ -797,6 +841,488 @@ async fn handle_prepare_gallery_post_callback(
         }
     }
     bot.answer_callback_query(query.id).await?;
+    Ok(())
+}
+
+async fn handle_translate_command(
+    bot: Bot,
+    message: Message,
+    global: GlobalDialog,
+    config: Arc<UserConfigKV>,
+) -> anyhow::Result<()> {
+    let Some(user) = message.from else {
+        return Ok(());
+    };
+    if !config.contains(user.id)?
+        || !config
+            .get::<user::Configuration>(user.id)?
+            .is_some_and(|c| {
+                c.vision_model_name.is_some()
+                    && c.vision_model_key.is_some()
+                    && c.post_auth_key.is_some()
+            })
+    {
+        bot.send_message(
+            message.chat.id,
+            "You should /setkey and /setvisionmodel first",
+        )
+        .await?;
+        return Ok(());
+    }
+    global.update(GlobalState::TranslationRequested).await?;
+
+    let actions =
+        InlineKeyboardMarkup::new(PostKind::iter().collect::<Vec<PostKind>>().chunks(3).map(
+            |row| {
+                row.into_iter()
+                    .map(|name| InlineKeyboardButton::callback(name.to_string(), name.to_string()))
+            },
+        ));
+    bot.send_message(message.chat.id, "What would you like to translate today?")
+        .reply_markup(actions)
+        .await?;
+    Ok(())
+}
+
+async fn handle_translate_callback(
+    bot: Bot,
+    query: CallbackQuery,
+    global: GlobalDialog,
+    kv: Arc<UserConfigKV>,
+) -> anyhow::Result<()> {
+    let chat_id = query.chat_id().unwrap();
+    let Some(data) = &query.data else {
+        bot.send_message(
+            chat_id,
+            "You didn't choose anything. Are you using a hacked client?",
+        )
+        .await?;
+        bot.answer_callback_query(query.id).await?;
+        return Ok(());
+    };
+    let Ok(kind) = PostKind::from_str(data) else {
+        bot.send_message(
+            chat_id,
+            "I don't understand your choice. Are you using a hacked client or something? I am so confused :X",
+        )
+        .await?;
+        bot.answer_callback_query(query.id).await?;
+        return Ok(());
+    };
+    let Some(user_config) = kv.get::<user::Configuration>(query.from.id)? else {
+        return Ok(());
+    };
+    match kind {
+        PostKind::Update => {
+            global
+                .update(GlobalState::PreparingUpdateTranslation)
+                .await?;
+            let api_config = user_config.to_openapi();
+            let posts = default_api::update_list_get(&api_config, None, None).await?;
+            let options = posts.iter().map(|post| {
+                [InlineKeyboardButton::callback(
+                    post.title.clone(),
+                    post.id.to_string(),
+                )]
+            });
+            bot.send_message(chat_id, "Choose one!")
+                .reply_markup(InlineKeyboardMarkup::new(options))
+                .await?;
+        }
+        PostKind::Gallery => {
+            bot.send_message(
+                chat_id,
+                "Oops, this feature is not implemented yet! Come back later~",
+            )
+            .await?;
+        }
+    }
+    bot.answer_callback_query(query.id).await?;
+    Ok(())
+}
+
+async fn handle_prepare_update_translation_callback(
+    bot: Bot,
+    query: CallbackQuery,
+    dialog: UpdateTranslationDialog,
+    kv: Arc<UserConfigKV>,
+    poll_store: ContextByPollId,
+) -> anyhow::Result<()> {
+    let chat_id = query.chat_id().unwrap();
+    let Some(post_id) = query.data else {
+        bot.send_message(chat_id, "I was expecting some data, but you didn't send anything. Are you using a hacked client?").await?;
+        bot.answer_callback_query(query.id).await?;
+        return Ok(());
+    };
+
+    let Ok(post_id) = post_id.parse::<i32>() else {
+        bot.send_message(
+            chat_id,
+            "Hmm, I am confused. You are supposed to choose a post, aren't you?",
+        )
+        .await?;
+        bot.answer_callback_query(query.id).await?;
+        return Ok(());
+    };
+
+    let Some(api_config) = kv
+        .get::<user::Configuration>(query.from.id)?
+        .map(|config| config.to_openapi())
+    else {
+        return Ok(());
+    };
+
+    let post = default_api::update_id_get(&api_config, post_id).await?;
+    let locale = post.locale;
+    let options = SupportedLocale::all_cases()
+        .iter()
+        .filter_map(|&l| {
+            if l != locale {
+                Some(InputPollOption::new(l.typical_language_name()))
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    dialog
+        .update(UpdateTranslationState::Selected(post))
+        .await?;
+    let message = bot.send_poll(
+        chat_id,
+        format!(
+            "This post is written in {}. Which language(s) would you like me to translate it to?",
+            locale.typical_language_name()
+        ),
+        options,
+    )
+    .allows_multiple_answers(true)
+    .await?;
+    poll_store.lock().await.insert(
+        message.poll().unwrap().id.clone(),
+        PollContext {
+            original_chat_id: chat_id,
+            issuer_id: query.from.id,
+        },
+    );
+    bot.answer_callback_query(query.id).await?;
+
+    Ok(())
+}
+
+async fn handle_update_translation_langauge_select_poll(
+    bot: Bot,
+    poll: Poll,
+    context: PollContext,
+    dialog: UpdateTranslationDialog,
+    global: GlobalDialog,
+    kv: Arc<UserConfigKV>,
+) -> anyhow::Result<()> {
+    let Some(UpdateTranslationState::Selected(post)) = dialog.get().await? else {
+        log::error!("no selected post, while getting a poll answer");
+        return Ok(());
+    };
+    let languages = poll
+        .options
+        .iter()
+        .filter_map(|option| {
+            if option.voter_count <= 0 {
+                None
+            } else {
+                Some(SupportedLocale::from_typical_language_name(&option.text).unwrap())
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let Some(config) = kv.get::<user::Configuration>(context.issuer_id)? else {
+        return Ok(());
+    };
+    let api_config = config.clone().to_openapi();
+    let Some(genai_client) = config
+        .vision_model_key
+        .map(|key| genai::Client::from_user_configured_key(key))
+    else {
+        return Ok(());
+    };
+    let Some(vlm_name) = config.vision_model_name else {
+        return Ok(());
+    };
+
+    bot.send_message(
+        context.original_chat_id,
+        "Hold on while I am waiting for the VLM's response",
+    )
+    .await?;
+    let mut translations = Vec::<(
+        SupportedLocale,
+        Result<Option<UpdatePutRequest>, _genai::translation::Error>,
+    )>::new();
+    for locale in languages {
+        let translation = post
+            .translate_to(
+                locale,
+                &genai_client,
+                &vlm_name,
+                &api_config,
+                Some(
+                    translations
+                        .iter()
+                        .filter_map(|(_, res)| {
+                            if let Ok(Some(t)) = res {
+                                Some(t.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>(),
+                ),
+            )
+            .await;
+        translations.push((locale, translation));
+    }
+
+    let posts = translations
+        .iter()
+        .filter_map(|(_, t)| if let Ok(t) = t { t.clone() } else { None })
+        .collect::<Vec<_>>();
+    let failed = translations
+        .iter()
+        .filter_map(|(l, t)| {
+            if let Err(_) = t {
+                Some(l.clone())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    let success_count = posts.len();
+    let failure_count = failed.len();
+
+    if failed.is_empty() {
+        bot.send_message(
+            context.original_chat_id,
+            "Yay! All translations succeeded~ Let's review before posting!",
+        )
+        .await?;
+        futures::future::try_join_all(posts.iter().map(async |post| {
+            bot.send_message(
+                context.original_chat_id,
+                format!("{}\n{}\n{}", post.header, post.title, post.summary),
+            )
+            .reply_markup(InlineKeyboardMarkup::new([[
+                InlineKeyboardButton::callback("Retry", format!("Retry {}", post.locale)),
+            ]]))
+            .await
+        }))
+        .await?;
+    } else {
+        log::error!(
+            "failed to translate update \"{}\" to {}",
+            post.title,
+            failed
+                .iter()
+                .map(|l| l.typical_language_name())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        for (lang, translation) in translations {
+            if let Err(err) = translation {
+                log::error!("for {}: {err}", lang.typical_language_name());
+
+                bot.send_message(
+                    context.original_chat_id,
+                    format!(
+                        "I could not translate to {}, cause' {}",
+                        lang.typical_language_name(),
+                        match err {
+                            _genai::translation::Error::GenAI(_) =>
+                                "the VLM provider did not like the request I've sent them.",
+                            _genai::translation::Error::InvalidXml(_) =>
+                                "the language model failed to follow my instructions.",
+                        }
+                    ),
+                )
+                .reply_markup(InlineKeyboardMarkup::new([[
+                    InlineKeyboardButton::callback("Retry", format!("Retry {}", lang)),
+                ]]))
+                .await?;
+            }
+        }
+        bot.send_message(
+            context.original_chat_id,
+            format!(
+                "{}Tbh I have zero idea. You may refer to the console for details though",
+                if failure_count > 1 {
+                    "Several translations failed. "
+                } else {
+                    ""
+                }
+            ),
+        )
+        .await?;
+    }
+
+    dialog
+        .update(UpdateTranslationState::Translated {
+            selected_post: post,
+            posts,
+            failed,
+        })
+        .await?;
+    global
+        .update(GlobalState::ReviewingUpdateTranslation)
+        .await?;
+    bot.send_message(context.original_chat_id, "What's next?")
+        .reply_markup(InlineKeyboardMarkup::new([[
+            InlineKeyboardButton::callback(
+                if failure_count <= 0 {
+                    "Post".to_string()
+                } else {
+                    format!("Post {}", success_count)
+                },
+                "Post",
+            ),
+            InlineKeyboardButton::callback("Cancel", "Cancel"),
+        ]]))
+        .await?;
+    Ok(())
+}
+
+async fn handle_review_update_translation_callback(
+    bot: Bot,
+    query: CallbackQuery,
+    dialog: UpdateTranslationDialog,
+    global: GlobalDialog,
+    kv: Arc<UserConfigKV>,
+) -> anyhow::Result<()> {
+    let Some(UpdateTranslationState::Translated {
+        selected_post,
+        mut posts,
+        mut failed,
+    }) = dialog.get().await?
+    else {
+        return Ok(());
+    };
+    let chat_id = query.chat_id().unwrap();
+    let Some(data) = query.data else {
+        bot.send_message(
+            chat_id,
+            "You didn't send me query data. Are you using a hacked client?",
+        )
+        .await?;
+        return Ok(());
+    };
+    match data.as_str() {
+        "Cancel" => {
+            dialog.exit().await?;
+            global.exit().await?;
+            bot.send_message(chat_id, "Of course! Come back anytime~")
+                .await?;
+        }
+        "Post" => {
+            let Some(config) = kv.get::<user::Configuration>(query.from.id)? else {
+                bot.answer_callback_query(query.id).await?;
+                return Ok(());
+            };
+            let api_config = config.to_openapi();
+            match future::try_join_all(
+                posts
+                    .into_iter()
+                    .map(|post| default_api::update_put(&api_config, post)),
+            )
+            .await
+            {
+                Ok(_) => {
+                    bot.send_message(
+                        chat_id,
+                        format!("Yippee! I have posted the translations for ya, check them out~"),
+                    )
+                    .await?;
+                    dialog.exit().await?;
+                    global.reset().await?;
+                }
+                Err(err) => {
+                    log::error!("failed to post translations: {err}");
+                    bot.send_message(chat_id, "Awaa... I failed to complete the task... You can check the console for details").await?;
+                }
+            }
+        }
+        _ => {
+            if data.starts_with("Retry")
+                && let Some((_, language_name)) = data.split_once(' ')
+                && let Some(locale) = SupportedLocale::all_cases()
+                    .iter()
+                    .filter(|&locale| locale.to_string() == language_name)
+                    .next()
+            {
+                let Some(config) = kv.get::<user::Configuration>(query.from.id)? else {
+                    bot.answer_callback_query(query.id).await?;
+                    return Ok(());
+                };
+                let api_config = config.clone().to_openapi();
+                let Some(genai_client) = config
+                    .vision_model_key
+                    .map(|key| genai::Client::from_user_configured_key(key))
+                else {
+                    return Ok(());
+                };
+                let Some(vlm_name) = config.vision_model_name else {
+                    return Ok(());
+                };
+
+                if let Some(idx) = failed.iter().position(|l| l == locale) {
+                    failed.remove(idx);
+                }
+                match selected_post
+                    .translate_to(
+                        locale.clone(),
+                        &genai_client,
+                        vlm_name,
+                        &api_config,
+                        None::<Vec<_>>,
+                    )
+                    .await
+                {
+                    Err(err) => {
+                        log::error!(
+                            "failed to translate update \"{}\" to {}: {err}",
+                            selected_post.title,
+                            locale
+                        );
+
+                        let message = query.message.unwrap();
+                        let message_id = message.id();
+                        let talk = "Oops, translation failed again...";
+                        if let Some(message) = message.regular_message()
+                            && let Some(message) = message.text()
+                            && message.starts_with(talk)
+                        {
+                            bot.edit_message_text(chat_id, message_id, format!("{message}."))
+                                .await?;
+                        } else {
+                            bot.edit_message_text(chat_id, message_id, talk).await?;
+                        }
+                    }
+                    Ok(Some(translation)) => {
+                        posts.push(translation);
+                    }
+                    Ok(None) => {
+                        // noop
+                    }
+                };
+                dialog
+                    .update(UpdateTranslationState::Translated {
+                        selected_post,
+                        posts,
+                        failed,
+                    })
+                    .await?
+            } else {
+                log::warn!("invalid translation callback data {data}");
+            }
+        }
+    };
+    bot.answer_callback_query(query.id).await?;
+
     Ok(())
 }
 

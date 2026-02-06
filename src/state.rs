@@ -1,4 +1,4 @@
-use openapi::models::UpdatePutRequest;
+use openapi::models::{SupportedLocale, UpdatePost, UpdatePutRequest};
 
 use crate::gallery::{GalleryCollectableMediaKind, GalleryItem};
 
@@ -6,11 +6,13 @@ use crate::gallery::{GalleryCollectableMediaKind, GalleryItem};
 pub enum GlobalState {
     #[default]
     Idle,
+    PostRequestd,
     PreparingGalleryPost,
     ReviewingGalleryPost,
     UpdatingKey,
     UpdatingApiEndpoint,
     UpdatingVisionModel,
+    TranslationRequested,
     PreparingUpdateTranslation,
     ReviewingUpdateTranslation,
 }
@@ -35,6 +37,10 @@ pub enum UpdateVisionModelState {
 pub enum UpdateTranslationState {
     #[default]
     Idle,
-    Selected(i32),
-    Translated(Vec<UpdatePutRequest>),
+    Selected(UpdatePost),
+    Translated {
+        selected_post: UpdatePost,
+        posts: Vec<UpdatePutRequest>,
+        failed: Vec<SupportedLocale>,
+    },
 }

@@ -13,7 +13,7 @@ pub enum Command {
     #[command(description = "update your API endpoint, only http(s) are supported")]
     SetApi,
     #[command(
-        description = "update your vision model name and key, enabling VLM based caption generation"
+        description = "update your vision model name and key, enabling VLM based caption generation and post translation"
     )]
     SetVisionModel,
     #[command(description = "I want to post stuff")]
