@@ -919,6 +919,10 @@ async fn handle_translate_callback(
                 .await?;
             let api_config = user_config.to_openapi();
             let posts = default_api::update_list_get(&api_config, None, None).await?;
+            let posts = posts
+                .iter()
+                .filter(|post| !post.trashed)
+                .collect::<Vec<_>>();
             let options = posts.iter().map(|post| {
                 [InlineKeyboardButton::callback(
                     post.title.clone(),
