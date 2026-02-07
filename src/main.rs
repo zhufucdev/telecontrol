@@ -1053,6 +1053,14 @@ async fn handle_update_translation_langauge_select_poll(
 
     bot.send_message(
         context.original_chat_id,
+        format!(
+            "So for reference, this is the original post:\n\n{}",
+            update_post_template(&post.header, &post.title, &post.summary)
+        ),
+    )
+    .await?;
+    bot.send_message(
+        context.original_chat_id,
         "Hold on while I am waiting for the VLM's response",
     )
     .await?;
@@ -1110,7 +1118,7 @@ async fn handle_update_translation_langauge_select_poll(
         futures::future::try_join_all(posts.iter().map(async |post| {
             bot.send_message(
                 context.original_chat_id,
-                format!("{}\n{}\n{}", post.header, post.title, post.summary),
+                update_post_template(&post.header, &post.title, &post.summary),
             )
             .reply_markup(InlineKeyboardMarkup::new([[
                 InlineKeyboardButton::callback("Retry", format!("Retry {}", post.locale)),
@@ -1311,9 +1319,10 @@ async fn handle_review_update_translation_callback(
                             bot.edit_message_text(
                                 chat_id,
                                 message.id(),
-                                format!(
-                                    "{}\n{}\n{}",
-                                    translation.header, translation.title, translation.summary
+                                update_post_template(
+                                    &translation.header,
+                                    &translation.title,
+                                    &translation.summary,
                                 ),
                             )
                             .await?;
@@ -1343,4 +1352,8 @@ async fn handle_review_update_translation_callback(
 
 async fn error_handler(error: anyhow::Error) {
     log::error!("{error}")
+}
+
+fn update_post_template(header: &str, title: &str, summary: &str) -> String {
+    format!("{}\n{}\n{}", header, title, summary)
 }
