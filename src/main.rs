@@ -1307,6 +1307,17 @@ async fn handle_review_update_translation_callback(
                         }
                     }
                     Ok(Some(translation)) => {
+                        if let Some(message) = query.message {
+                            bot.edit_message_text(
+                                chat_id,
+                                message.id(),
+                                format!(
+                                    "{}\n{}\n{}",
+                                    translation.header, translation.title, translation.summary
+                                ),
+                            )
+                            .await?;
+                        }
                         posts.push(translation);
                     }
                     Ok(None) => {
