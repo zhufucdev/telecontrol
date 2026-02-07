@@ -22,7 +22,7 @@ use teloxide::{
         UpdateHandler,
         dialogue::{GetChatId, InMemStorage},
     },
-    payloads::SendMessageSetters,
+    payloads::{EditMessageTextSetters, SendMessageSetters},
     prelude::*,
     types::{
         InlineKeyboardButton, InlineKeyboardButtonKind, InlineKeyboardMarkup, InputPollOption,
@@ -1309,10 +1309,16 @@ async fn handle_review_update_translation_callback(
                             && message.starts_with(talk)
                         {
                             bot.edit_message_text(chat_id, message_id, format!("{message}."))
-                                .await?;
                         } else {
-                            bot.edit_message_text(chat_id, message_id, talk).await?;
+                            bot.edit_message_text(chat_id, message_id, talk)
                         }
+                        .reply_markup(InlineKeyboardMarkup::new([[
+                            InlineKeyboardButton::callback(
+                                "Retry",
+                                format!("Retry {}", language_name),
+                            ),
+                        ]]))
+                        .await?;
                     }
                     Ok(Some(translation)) => {
                         if let Some(message) = query.message {
